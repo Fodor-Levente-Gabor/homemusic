@@ -1,0 +1,13 @@
+services:
+  homemusic:
+    build: .
+    container_name: homemusic
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:?állíts be egy jelszót a .env fájlban}
+      CACHE_LIMIT_GB: "100"          # kezdőérték; később a beállításokban módosítható
+      TZ: Europe/Budapest
+    volumes:
+      - ./data:/data                 # adatbázis, letöltött zenék, YT Music belépés
