@@ -75,6 +75,7 @@ fun SettingsScreen() {
             Text("Szerver: ${Prefs.server}", color = Muted, modifier = Modifier.padding(horizontal = 16.dp))
             Text(if (online) "Távirányító: kapcsolódva" else "Távirányító: nincs kapcsolat", color = Muted, modifier = Modifier.padding(horizontal = 16.dp))
             (status as? Ld.Ok<JSONObject>)?.v?.let { st ->
+                Text("Szerver verziója: ${st.optString("version", "?")}", color = Muted, modifier = Modifier.padding(horizontal = 16.dp))
                 val c = st.optJSONObject("cache")
                 if (c != null) Text(
                     "Szerver gyorsítótár: ${"%.1f".format(c.optLong("used_bytes") / 1073741824.0)} / ${"%.0f".format(c.optLong("limit_bytes") / 1073741824.0)} GB · ${c.optInt("files")} fájl",

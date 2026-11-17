@@ -37,7 +37,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -101,19 +103,32 @@ fun TrackRow(t: Track, current: Boolean = false, onClick: () -> Unit) {
         Cover(t.thumb, 48.dp)
         Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
             Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (current) Accent else MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Medium)
-            Text(
-                t.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Muted, fontSize = 13.sp,
-                modifier = Modifier.clickable { Nav.artist(t.artists.firstOrNull() ?: t.artist) },
-            )
+            ArtistLinks(t)
         }
         if (dl.containsKey(t.id)) Icon(Icons.Filled.CheckCircle, contentDescription = "Letöltve", tint = Muted, modifier = Modifier.size(16.dp))
         IconButton(onClick = { Nav.menuTrack.value = t }) { Icon(Icons.Filled.MoreVert, contentDescription = "Menü", tint = Muted) }
     }
 }
 
+/** Minden előadó külön kattintható (több előadós számnál is). */
+@Composable
+fun ArtistLinks(t: Track, fontSize: TextUnit = 13.sp, color: Color = Muted, modifier: Modifier = Modifier) {
+    val names = if (t.artists.isNotEmpty()) t.artists else t.artist.split(", ").filter { it.isNotBlank() }
+    Row(modifier) {
+        names.forEachIndexed { i, n ->
+            if (i > 0) Text(", ", color = color, fontSize = fontSize)
+            Text(
+                n, color = color, fontSize = fontSize, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false).clickable { Nav.artist(n, t.artistIds.getOrNull(i)?.ifEmpty { null } ?: "_") },
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ItemCard(item: Item, size: Dp = 140.dp, onOpen: (Item) -> Unit) {
-    Column(Modifier.width(size).clickable { onOpen(item) }, horizontalAlignment = if (item.type == "artist") Alignment.CenterHorizontally else Alignment.Start) {
+    Column(Modifier.width(size).combinedClickable(onClick = { onOpen(item) }, onLongClick = { item.track?.let { Nav.menuTrack.value = it } }), horizontalAlignment = if (item.type == "artist") Alignment.CenterHorizontally else Alignment.Start) {
         Cover(item.thumb, size, round = item.type == "artist")
         Text(item.title, maxLines = 2, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 6.dp))
         if (item.subtitle.isNotBlank()) Text(item.subtitle, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 12.sp, color = Muted)

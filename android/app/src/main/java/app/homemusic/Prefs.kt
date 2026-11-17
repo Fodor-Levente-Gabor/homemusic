@@ -26,6 +26,9 @@ object Prefs {
     var dlIndex: String
         get() = sp.getString("dl_index", "[]") ?: "[]"
         set(v) = sp.edit().putString("dl_index", v).apply()
+    var lyricOffset: Int
+        get() = sp.getInt("lyric_offset", 0)
+        set(v) = sp.edit().putInt("lyric_offset", v).apply()
     var lastQueue: String
         get() = sp.getString("last_queue", "") ?: ""
         set(v) = sp.edit().putString("last_queue", v).apply()

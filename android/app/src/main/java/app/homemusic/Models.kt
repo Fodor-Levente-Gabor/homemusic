@@ -18,19 +18,24 @@ data class Track(
     val gainDb: Double = 0.0,
     val liked: Boolean = false,
     val cached: Boolean = false,
+    val artistIds: List<String> = emptyList(),
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("video_id", id); put("title", title); put("artist", artist)
         put("artists", JSONArray(artists)); put("album", album); put("album_id", albumId ?: JSONObject.NULL)
         put("duration_sec", durationSec); put("thumbnail", thumb ?: JSONObject.NULL)
         put("gain_db", gainDb); put("liked", liked); put("cached", cached)
+        put("artist_ids", JSONArray(artistIds))
     }
 
     companion object {
         fun from(o: JSONObject): Track {
             val names = ArrayList<String>()
             o.optJSONArray("artists")?.let { a -> for (i in 0 until a.length()) names.add(a.optString(i)) }
+            val aids = ArrayList<String>()
+            o.optJSONArray("artist_ids")?.let { a -> for (i in 0 until a.length()) aids.add(if (a.isNull(i)) "" else a.optString(i)) }
             return Track(
+                artistIds = aids,
                 id = o.optString("video_id"),
                 title = o.optString("title"),
                 artist = o.optString("artist"),

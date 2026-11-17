@@ -42,8 +42,18 @@ data class PState(
     val shuffle: Boolean = false,
     val repeat: Int = 0,          // 0 ki, 1 összes, 2 egy
     val error: String? = null,
+    val auto: List<Boolean> = emptyList(),   // true = automatikusan hozzáadott (rádió) szám, a "kereten" kívül
 ) {
     val track: Track? get() = queue.getOrNull(index)
+
+    /** A keret utolsó eleme: a most szóló szám és a felhasználó által választott/hozzáadott számok. A többi (automatikus) a keret után van. */
+    val frameEnd: Int
+        get() {
+            if (queue.isEmpty()) return -1
+            var last = -1
+            for (i in queue.indices) if (!auto.getOrElse(i) { false }) last = i
+            return maxOf(index, last).coerceAtMost(queue.size - 1)
+        }
 }
 
 /**
@@ -129,10 +139,10 @@ object PlayerHub {
         }
     }
 
-    fun mediaItem(t: Track): MediaItem {
+    fun mediaItem(t: Track, auto: Boolean = false): MediaItem {
         trackCache[t.id] = t
         val uri = if (Downloads.has(t.id)) Uri.fromFile(Downloads.file(t.id)) else Uri.parse(Api.audioUrl(t.id))
-        val extras = Bundle().apply { putDouble("gain", t.gainDb); putString("vid", t.id) }
+        val extras = Bundle().apply { putDouble("gain", t.gainDb); putString("vid", t.id); putBoolean("auto", auto) }
         val md = MediaMetadata.Builder().setTitle(t.title).setArtist(t.artist).setAlbumTitle(t.album).setExtras(extras)
         t.thumb?.let { md.setArtworkUri(Uri.parse(it)) }
         return MediaItem.Builder().setMediaId(t.id).setUri(uri).setMediaMetadata(md.build()).build()
@@ -146,10 +156,14 @@ object PlayerHub {
     private fun pull() {
         val c = ctl ?: return
         val q = ArrayList<Track>(c.mediaItemCount)
-        for (i in 0 until c.mediaItemCount) q.add(trackOf(c.getMediaItemAt(i)))
+        val au = ArrayList<Boolean>(c.mediaItemCount)
+        for (i in 0 until c.mediaItemCount) {
+            val mi = c.getMediaItemAt(i)
+            q.add(trackOf(mi)); au.add(mi.mediaMetadata.extras?.getBoolean("auto", false) ?: false)
+        }
         val st = c.playbackState
         local.value = PState(
-            queue = q, index = if (c.mediaItemCount == 0) -1 else c.currentMediaItemIndex,
+            queue = q, auto = au, index = if (c.mediaItemCount == 0) -1 else c.currentMediaItemIndex,
             playing = c.playWhenReady && st != Player.STATE_ENDED && st != Player.STATE_IDLE,
             loading = st == Player.STATE_BUFFERING,
             shuffle = c.shuffleModeEnabled,
@@ -239,14 +253,44 @@ object PlayerHub {
                 "repeat" -> c.repeatMode = when (a.optString("mode")) { "all" -> Player.REPEAT_MODE_ALL; "one" -> Player.REPEAT_MODE_ONE; else -> Player.REPEAT_MODE_OFF }
                 "playIndex" -> { c.seekTo(a.optInt("index"), 0); c.play() }
                 "enqueue" -> {
-                    val items = tracksOf(a.optJSONArray("tracks")).map { mediaItem(it) }
-                    if (a.optBoolean("next") && c.mediaItemCount > 0) c.addMediaItems(c.currentMediaItemIndex + 1, items) else c.addMediaItems(items)
-                    if (c.mediaItemCount == items.size) { c.prepare(); c.play() }
+                    pull()
+                    val auto = a.optBoolean("auto")
+                    val items = tracksOf(a.optJSONArray("tracks")).map { mediaItem(it, auto) }
+                    val cur = c.currentMediaItemIndex
+                    val at = when {
+                        c.mediaItemCount == 0 -> 0
+                        a.optBoolean("next") -> cur + 1                              // következő lesz
+                        auto -> c.mediaItemCount                                      // automatikus: a sor legvégére
+                        else -> (local.value.frameEnd + 1).coerceIn(0, c.mediaItemCount)   // a keret végére
+                    }
+                    val wasEmpty = c.mediaItemCount == 0
+                    c.addMediaItems(at, items)
+                    if (wasEmpty) { c.prepare(); c.play() }
+                }
+                "promote" -> {
+                    pull()
+                    val i = a.optInt("index")
+                    val fe = local.value.frameEnd
+                    if (i > fe && i < c.mediaItemCount) {
+                        val t = trackOf(c.getMediaItemAt(i))
+                        c.moveMediaItem(i, fe + 1)
+                        c.replaceMediaItem(fe + 1, mediaItem(t, false))
+                    }
                 }
                 "removeAt" -> if (a.optInt("index") in 0 until c.mediaItemCount) c.removeMediaItem(a.optInt("index"))
                 "moveQueue" -> {
+                    pull()
                     val f = a.optInt("from"); val t = a.optInt("to")
-                    if (f in 0 until c.mediaItemCount && t in 0 until c.mediaItemCount) c.moveMediaItem(f, t)
+                    if (f in 0 until c.mediaItemCount && t in 0 until c.mediaItemCount && f != t) {
+                        val fe = local.value.frameEnd
+                        val outsideBefore = f > fe
+                        val insideAfter = if (outsideBefore) t <= fe + 1 else t <= fe
+                        val wasAuto = c.getMediaItemAt(f).mediaMetadata.extras?.getBoolean("auto", false) ?: false
+                        c.moveMediaItem(f, t)
+                        if (wasAuto == insideAfter && t != c.currentMediaItemIndex) {       // keretbe húzott: nem automatikus, kereten kívülre húzott: automatikus
+                            c.replaceMediaItem(t, mediaItem(trackOf(c.getMediaItemAt(t)), !insideAfter))
+                        }
+                    }
                 }
                 "insertAt" -> c.addMediaItems(a.optInt("at").coerceIn(0, c.mediaItemCount), tracksOf(a.optJSONArray("tracks")).map { mediaItem(it) })
             }
@@ -257,7 +301,10 @@ object PlayerHub {
     // kényelmi hívások a felületnek
     private fun slim(ts: List<Track>) = JSONArray(ts.map { it.toJson() })
     fun playTracks(ts: List<Track>, index: Int = 0) = cmd("playQueue", JSONObject().put("tracks", slim(ts)).put("index", index))
-    fun enqueue(ts: List<Track>, next: Boolean = false) = cmd("enqueue", JSONObject().put("tracks", slim(ts)).put("next", next))
+    fun enqueue(ts: List<Track>, next: Boolean = false, auto: Boolean = false) =
+        cmd("enqueue", JSONObject().put("tracks", slim(ts)).put("next", next).put("auto", auto))
+    fun promote(i: Int) = cmd("promote", JSONObject().put("index", i))
+    fun moveTo(from: Int, to: Int) = cmd("moveQueue", JSONObject().put("from", from).put("to", to))
     fun toggle() = cmd("toggle")
     fun next() = cmd("next")
     fun prev() = cmd("prev")
@@ -277,7 +324,7 @@ object PlayerHub {
         scope.launch {
             try {
                 val rest = Api.radio(t.id).filter { it.id != t.id }.shuffled()
-                if (rest.isNotEmpty()) enqueue(rest)
+                if (rest.isNotEmpty()) enqueue(rest, auto = true)
             } catch (e: Exception) { /* a szám rádió nélkül is szól */ }
         }
     }

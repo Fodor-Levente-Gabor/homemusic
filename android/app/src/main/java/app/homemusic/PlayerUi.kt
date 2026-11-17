@@ -61,6 +61,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -72,6 +73,18 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.res.Configuration
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.launch
 
 fun fmt(ms: Long): String {
@@ -140,13 +153,14 @@ fun NowTab(t: Track, v: PState) {
     var liked by remember(t.id) { mutableStateOf(t.liked) }
     val dl by Downloads.index.collectAsState()
     val busy by Downloads.busy.collectAsState()
-    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-            Cover(t.thumb, 300.dp)
-        }
+    val land = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+
+    val info: @Composable () -> Unit = {
         Text(t.title, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
-        Text(t.artist, color = Muted, fontSize = 16.sp, modifier = Modifier.clickable { Nav.artist(t.artists.firstOrNull() ?: t.artist) })
+        ArtistLinks(t, fontSize = 16.sp)
         if (v.error != null) Text(v.error, color = Accent, fontSize = 12.sp)
+    }
+    val controls: @Composable () -> Unit = {
         SeekBar()
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { PlayerHub.setShuffle(!v.shuffle) }) { Icon(Icons.Filled.Shuffle, contentDescription = "Keverés", tint = if (v.shuffle) Accent else Color.White) }
@@ -160,7 +174,7 @@ fun NowTab(t: Track, v: PState) {
                 Icon(if (v.repeat == 2) Icons.Filled.RepeatOne else Icons.Filled.Repeat, contentDescription = "Ismétlés", tint = if (v.repeat != 0) Accent else Color.White)
             }
         }
-        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
             IconButton(onClick = {
                 val n = !liked; liked = n
                 scope.launch { try { Api.like(t.id, n) } catch (e: Exception) { liked = !n; PlayerHub.toast(e.message ?: "Hiba") } }
@@ -175,6 +189,25 @@ fun NowTab(t: Track, v: PState) {
                 if (busy.contains(t.id)) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = Color.White)
                 else Icon(if (dl.containsKey(t.id)) Icons.Filled.DownloadDone else Icons.Filled.Download, contentDescription = "Offline")
             }
+        }
+    }
+
+    if (land) {
+        // fekvő telefon: borító balra, minden más jobbra – semmi sem vágódik le
+        Row(Modifier.fillMaxSize().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+            BoxWithConstraints(Modifier.weight(1f).fillMaxHeight().padding(8.dp), contentAlignment = Alignment.Center) {
+                Cover(t.thumb, minOf(maxWidth, maxHeight))
+            }
+            Column(Modifier.weight(1.3f).fillMaxHeight().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                info(); controls()
+            }
+        }
+    } else {
+        Column(Modifier.fillMaxSize().padding(horizontal = 24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                Cover(t.thumb, minOf(maxWidth, maxHeight))
+            }
+            info(); controls()
         }
     }
 }
@@ -198,21 +231,95 @@ fun SeekBar() {
     }
 }
 
+sealed class QEntry {
+    class Row(val i: Int) : QEntry()
+    object Top : QEntry()
+    object Auto : QEntry()
+}
+
 @Composable
 fun QueueTab(v: PState) {
     val state = rememberLazyListState()
-    LaunchedEffect(v.index) { if (v.index > 0) state.scrollToItem(maxOf(0, v.index - 1)) }
-    LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 24.dp)) {
-        itemsIndexed(v.queue) { i, t ->
-            Row(Modifier.fillMaxWidth().clickable { PlayerHub.playIndex(i) }.padding(start = 16.dp, end = 4.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Cover(t.thumb, 44.dp)
-                Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
-                    Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (i == v.index) Accent else Color.White, fontWeight = FontWeight.Medium)
-                    Text(t.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Muted, fontSize = 13.sp)
+    val fe = v.frameEnd
+    val n = v.queue.size
+    val entries = remember(n, fe) {
+        buildList<QEntry> {
+            add(QEntry.Top)
+            for (i in 0..minOf(fe, n - 1)) add(QEntry.Row(i))
+            if (fe < n - 1) {
+                add(QEntry.Auto)
+                for (i in fe + 1 until n) add(QEntry.Row(i))
+            }
+        }
+    }
+    LaunchedEffect(v.index) { if (v.index > 0) state.scrollToItem(maxOf(0, v.index)) }
+
+    var dragFrom by remember { mutableStateOf<Int?>(null) }
+    var dragDy by remember { mutableFloatStateOf(0f) }
+
+    fun finishDrag() {
+        val from = dragFrom
+        if (from != null) {
+            val info = state.layoutInfo.visibleItemsInfo
+            val me = info.firstOrNull { it.key == "q$from" }
+            if (me != null) {
+                val center = me.offset + me.size / 2f + dragDy
+                val hit = info.firstOrNull { center >= it.offset && center < it.offset + it.size }
+                val key = hit?.key as? String
+                val to: Int? = when {
+                    key == null -> null
+                    key == "auto" -> if (from > fe) fe + 1 else fe
+                    key == "top" -> 0
+                    else -> key.substring(1).toIntOrNull()
                 }
-                IconButton(onClick = { if (i > 0) PlayerHub.move(i, i - 1) }, enabled = i > 0) { Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Fel") }
-                IconButton(onClick = { if (i < v.queue.size - 1) PlayerHub.move(i, i + 1) }, enabled = i < v.queue.size - 1) { Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Le") }
-                IconButton(onClick = { PlayerHub.removeAt(i) }) { Icon(Icons.Filled.Close, contentDescription = "Eltávolít", tint = Muted) }
+                if (to != null && to != from) PlayerHub.moveTo(from, to)
+            }
+        }
+        dragFrom = null
+        dragDy = 0f
+    }
+
+    val finishRef = rememberUpdatedState({ finishDrag() })
+
+    LazyColumn(Modifier.fillMaxSize(), state = state, contentPadding = PaddingValues(bottom = 24.dp)) {
+        itemsIndexed(entries, key = { _, e -> when (e) { is QEntry.Row -> "q${e.i}"; QEntry.Top -> "top"; QEntry.Auto -> "auto" } }) { _, e ->
+            when (e) {
+                QEntry.Top -> Text("Sor – a most szóló és a hozzáadott számok", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                QEntry.Auto -> Text("Automatikus következők – húzd a keretbe, vagy nyomd meg a +-t", color = Muted, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp))
+                is QEntry.Row -> {
+                    val i = e.i
+                    val t = v.queue[i]
+                    val inFrame = i <= fe
+                    val dragging = dragFrom == i
+                    Row(
+                        Modifier.fillMaxWidth().height(60.dp)
+                            .graphicsLayer { translationY = if (dragging) dragDy else 0f }
+                            .zIndex(if (dragging) 1f else 0f)
+                            .background(if (dragging) Surface2 else if (inFrame) Color(0xFF181818) else Bg)
+                            .clickable { PlayerHub.playIndex(i) }
+                            .padding(start = 16.dp, end = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Cover(t.thumb, 44.dp)
+                        Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                            Text(t.title, maxLines = 1, overflow = TextOverflow.Ellipsis, color = if (i == v.index) Accent else if (inFrame) Color.White else Muted, fontWeight = FontWeight.Medium)
+                            Text(t.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Muted, fontSize = 13.sp)
+                        }
+                        if (!inFrame) IconButton(onClick = { PlayerHub.promote(i) }) { Icon(Icons.Filled.Add, contentDescription = "Keretbe", tint = Color.White) }
+                        IconButton(onClick = { PlayerHub.removeAt(i) }) { Icon(Icons.Filled.Close, contentDescription = "Eltávolít", tint = Muted) }
+                        Box(
+                            Modifier.size(44.dp).pointerInput(i) {
+                                detectDragGestures(
+                                    onDragStart = { dragFrom = i; dragDy = 0f },
+                                    onDrag = { change, amount -> change.consume(); dragDy += amount.y },
+                                    onDragEnd = { finishRef.value() },
+                                    onDragCancel = { dragFrom = null; dragDy = 0f },
+                                )
+                            },
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(Icons.Filled.DragHandle, contentDescription = "Húzd a rendezéshez", tint = Muted) }
+                    }
+                }
             }
         }
     }
@@ -229,6 +336,7 @@ fun LyricsTab(t: Track) {
     var ptr by remember(t.id) { mutableIntStateOf(0) }
     val pos by PlayerHub.posMs.collectAsState()
     val target by PlayerHub.target.collectAsState()
+    var off by remember { mutableIntStateOf(Prefs.lyricOffset) }
 
     LaunchedEffect(t.id, retry) {
         status = "loading"
@@ -244,7 +352,7 @@ fun LyricsTab(t: Track) {
     val lines = lyr?.lines ?: emptyList()
     var active = -1
     if (!sync && lyr?.synced == true) for (i in lines.indices) { val lt = lines[i].t; if (lt != null && lt <= pos) active = i }
-    val shown = if (sync) ptr - 1 else active
+    val shown = if (sync) ptr - 1 else if (active < 0 && off <= 0) -1 else (active + off).coerceIn(-1, lines.size - 1)
     val listState = rememberLazyListState()
     LaunchedEffect(shown) { if (shown >= 0) listState.animateScrollToItem(maxOf(0, shown - 2)) }
 
@@ -274,7 +382,11 @@ fun LyricsTab(t: Track) {
             if (!sync) {
                 Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedButton(onClick = { ptr = 0; sync = true; PlayerHub.seek(0); PlayerHub.cmd("play") }, enabled = target == null) { Text("Szinkronizálás") }
-                    Text(if (lyr?.synced == true) "szinkronizált · ${lyr?.source}" else "nincs időzítve", color = Muted, fontSize = 12.sp)
+                    if (lyr?.synced == true) {
+                        OutlinedButton(onClick = { off -= 1; Prefs.lyricOffset = off }) { Text("−") }
+                        Text("sor: ${if (off > 0) "+" else ""}$off", fontSize = 13.sp)
+                        OutlinedButton(onClick = { off += 1; Prefs.lyricOffset = off }) { Text("+") }
+                    } else Text("nincs időzítve", color = Muted, fontSize = 12.sp)
                 }
             } else {
                 Column(Modifier.fillMaxWidth().background(Surface1).padding(12.dp)) {
@@ -333,7 +445,7 @@ fun TrackMenu() {
             Column {
                 MenuRow("Lejátszás most (+ hasonló számok)") { PlayerHub.playRadio(t); close() }
                 MenuRow("Következő lesz") { PlayerHub.enqueue(listOf(t), next = true); PlayerHub.toast("Hozzáadva: következő"); close() }
-                MenuRow("Hozzáadás a sorhoz") { PlayerHub.enqueue(listOf(t)); PlayerHub.toast("Hozzáadva a sorhoz"); close() }
+                MenuRow("Hozzáadás a sorhoz (a keret végére)") { PlayerHub.enqueue(listOf(t)); PlayerHub.toast("Hozzáadva a sorhoz"); close() }
                 MenuRow(if (t.liked) "Kedvelés törlése" else "Kedvelés") {
                     scope.launch { try { Api.like(t.id, !t.liked); PlayerHub.toast(if (t.liked) "Kedvelés törölve" else "Kedvelve") } catch (e: Exception) { PlayerHub.toast(e.message ?: "Hiba") } }
                     close()

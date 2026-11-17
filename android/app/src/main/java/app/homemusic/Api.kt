@@ -96,7 +96,14 @@ object Api {
     }
 
     suspend fun artist(id: String, name: String?): Page {
-        val o = obj("/api/artist/${enc(id.ifEmpty { "_" })}" + (if (!name.isNullOrBlank()) "?name=${enc(name)}" else ""))
+        val q = if (!name.isNullOrBlank()) "?name=${enc(name)}" else ""
+        val o = try {
+            obj("/api/artist/${enc(id.ifEmpty { "_" })}$q")
+        } catch (e: ApiException) {
+            // ha az azonosító nem jó, a név alapján újrapróbáljuk (ez az út a számok felől is biztosan működik)
+            if (name.isNullOrBlank() || id.isEmpty() || id == "_") throw e
+            obj("/api/artist/_$q")
+        }
         val sec = o.optJSONObject("sections") ?: JSONObject()
         val songs = sec.optJSONArray("songs")?.items()?.mapNotNull { it.track } ?: emptyList()
         val names = mapOf("albums" to "Albumok", "singles" to "Kislemezek", "videos" to "Videók", "related" to "Hasonló előadók")
